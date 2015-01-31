@@ -78,22 +78,34 @@
 (defclass simple-chars (over-iter)
   ((cur-string :initform nil)
    (cur-pos :initform 0)
-   (cur-length :initform 0)))
+   (cur-length :initform 0)
+   (state :initform 0)))
 
 (defun mk-simple-chars (sub-iter)
   (make-instance 'simple-chars :sub-iterator sub-iter))
   
 (defmethod next-iter ((iter simple-chars))
-  (with-slots (cur-string cur-pos cur-length sub-iterator) iter
-    (when (not cur-string)
-      (setf cur-pos 0
-	    cur-string (next-iter sub-iterator))
-      (setf cur-length (length cur-string)))
-    ;; each string is assumed to have at least 1 char - the #\return or #\newline
-    (let ((res (char cur-string cur-pos)))
-      (if (equal cur-length (incf cur-pos))
-	  (setf cur-string nil))
-      res)))
+  (with-slots (cur-string cur-pos cur-length sub-iterator state) iter
+    (cond ((equal 2 state)
+	   ;; Plug in a new string
+	   (setf cur-pos 0
+		 cur-string (next-iter sub-iterator))
+	   (setf cur-length (length cur-string)
+		 state 0)
+	   (next-iter iter))
+	  ((equal 1 state)
+	   ;; Emit an end-of-line token
+	   (setf state 2)
+	   :end-of-line)
+	  ((equal 0 state)
+	   ;; Act as usual - emit next char
+	   (if (equal 0 cur-length)
+	       (progn (setf state 1)
+		      (next-iter iter))
+	       (let ((res (char cur-string cur-pos)))
+		 (if (equal cur-length (incf cur-pos))
+		     (setf state 1))
+		 res))))))
       
 (defun foo ()
   (with-open-file (stream "~/drafts/kauffman-in-a-nutshell/noeuds-d-enfants.tex")
@@ -125,6 +137,9 @@
   ((text :initarg :text :initform "")
    (cat :initarg :cat :initform 12)))
 
+(defun mk-tex-token (text &optional (cat :undefined))
+  (make-instance 'tex-token :text text :cat cat))
+
 (defun other-token (char)
   (make-instance 'tex-token :text char :cat :other))
 
@@ -152,9 +167,56 @@
 (defun set-cat-reader (cat fun)
   (setf (gethash cat cat-readtable) fun))
 
-(defun other-cat-reader (char iter)
+(defun default-cat-reader (char iter)
   (declare (ignore iter))
-  (other-token char))
+  (setf spacing-state :m)
+  (mk-tex-token char (get-char-cat char)))
+
+(defun ignore-cat-reader (char iter)
+  (declare (ignore char))
+  (next-iter iter))
+
+(defun superscript-cat-reader (char iter)
+  (with-slots (sub-iterator) iter
+    
+
+(defparameter spacing-state :n
+  "The state of the reader w.r.t reading the spaces. Can be :N, :M or :S")
+
+(defun space-cat-reader (char iter)
+  (declare (ignore char))
+  (cond ((or (eq :n spacing-state)
+	     (eq :s spacing-state))
+	 (next-iter iter))
+	((eq :m spacing-state)
+	 (setf spacing-state :s)
+	 (mk-tex-token (code-char 32) :space))
+	(t (error "Unknown SPACING-STATE: ~a" spacing-state))))
+
+(defun invalid-cat-reader (char iter)
+  (warn "Read an invalid character: ~a" char)
+  (next-iter iter))
+
+(defun comment-cat-reader (char iter)
+  (declare (ignore char))
+  (with-slots (sub-iterator) iter
+    (iter (while (not (eq :end-of-line (next-iter sub-iterator)))))
+    (push-iter :end-of-line sub-iterator)
+    (next-iter iter)))
+
+(defun end-of-line-cat-reader (char iter)
+  (declare (ignore char))
+  (with-slots (sub-iterator) iter
+    (iter (while (not (eq :end-of-line (next-iter sub-iterator)))))
+    (push-iter :end-of-line sub-iterator)
+    (cond ((eq :n spacing-state) (mk-tex-token :par :undefined))
+	  ((eq :m spacing-state) (mk-tex-token (code-char 32) :space))
+	  ((eq :s spacing-state) (next-iter iter)))))
+
+(defun eol-reader (char iter)
+  (declare (ignore char))
+  (setf spacing-state :n)
+  (next-iter iter))
 
 (defun vanilla-reader (iter)
   (with-slots (sub-iterator) iter
@@ -184,3 +246,4 @@
 ;; 		  (lambda (c)
 ;; 		    (return-from return-condition c))))
 ;;     (counter 10)))
+
