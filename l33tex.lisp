@@ -149,6 +149,9 @@
   (gethash char teh-readtable))
 (defun set-char-reader (char fun)
   (setf (gethash char teh-readtable) fun))
+(defun clear-char-readtable ()
+  (clrhash teh-readtable))
+
 
 (defun get-char-cat-reader (char)
   (get-cat-reader (get-char-cat char)))
@@ -159,6 +162,8 @@
   (gethash char char-cats :other))
 (defun set-char-cat (char cat)
   (setf (gethash char char-cats) cat))
+(defun clear-char-cats ()
+  (clrhash char-cats))
 
 (defparameter cat-readtable (make-hash-table :test #'equal))
 
@@ -166,19 +171,51 @@
   (gethash cat cat-readtable))
 (defun set-cat-reader (cat fun)
   (setf (gethash cat cat-readtable) fun))
+(defun clear-cat-readtable ()
+  (clrhash cat-readtable))
 
 (defun default-cat-reader (char iter)
   (declare (ignore iter))
   (setf spacing-state :m)
   (mk-tex-token char (get-char-cat char)))
 
-(defun ignore-cat-reader (char iter)
+(defun ignored-cat-reader (char iter)
   (declare (ignore char))
   (next-iter iter))
 
-(defun superscript-cat-reader (char iter)
+;; (defun superscript-cat-reader (char iter)
+;;   (with-slots (sub-iterator) iter
+
+
+(defun keywordicate (x)
+  (intern (string x)
+	  (find-package "KEYWORD")))
+
+(defun read-letter-sequence (char iter)
+  (let ((res (list char))
+	(next-char (next-iter iter)))
+    (iter (while (eq :letter (get-char-cat next-char)))
+	  (push next-char res)
+	  (setf next-char (next-iter iter)))
+    (push-iter next-char iter)
+    (coerce (nreverse res) 'string)))
+
+(defun escape-cat-reader (char iter)
+  (declare (ignore char))
   (with-slots (sub-iterator) iter
-    
+    (let ((next-char (next-iter sub-iterator)))
+      (cond ((eq :end-of-line next-char)
+	     (push-iter next-char sub-iterator)
+	     (mk-tex-token '||))
+	    ((eq :letter (get-char-cat next-char))
+	     (let ((sym (keywordicate (read-letter-sequence next-char sub-iterator))))
+	       (setf spacing-state :s)
+	       (mk-tex-token sym)))
+	    (t (if (eq :space (get-char-cat next-char))
+		   (setf spacing-state :s)
+		   (setf spacing-state :m))
+	       (mk-tex-token (keywordicate next-char)))))))
+  
 
 (defparameter spacing-state :n
   "The state of the reader w.r.t reading the spaces. Can be :N, :M or :S")
@@ -233,17 +270,56 @@
 (defmethod next-iter ((iter teh-reader))
   (funcall (slot-value iter 'entry-point) iter))
 
-;; (define-condition valuable-condition (error)
-;;   ((value :initarg :value :reader valuable-value)))
 
-;; (defun counter (n)
-;;   (iter (for i from 0 to n)
-;; 	(restart-case (error 'valuable-condition :value i)
-;; 	  (next () nil))))
+;; OK, now I have to write installers for all these wonderful readers
+;; But first, I need to write clearers.
 
-;; (defun return-condition ()
-;;   (handler-bind ((valueable-condition
-;; 		  (lambda (c)
-;; 		    (return-from return-condition c))))
-;;     (counter 10)))
+(defun clear-reader-chain ()
+  (uninstall-prereader)
+  (clear-char-readtable)
+  (clear-char-cats)
+  (clear-cat-readtable))
+
+(defun cat-reader-name (x)
+  (intern (join "" (string x) "-CAT-READER")))
+
+(defun %install-plain-tex-reader-chain ()
+  (install-plain-tex-prereader)
+  ;; install readers for char-categories
+  (macrolet ((frob (&rest clauses)
+	       `(progn ,@(mapcar (lambda (clause)
+				   (if (consp clause)
+				       `(set-cat-reader ,(keywordicate (car clause))
+							#',(cat-reader-name (cadr clause)))
+				       `(set-cat-reader ,(keywordicate clause) #',(cat-reader-name clause))))
+				 clauses))))
+    (frob (other default) escape end-of-line ignored space comment invalid))
+  ;; install reader for :END-OF-LINE - special KLUDGE case
+  (set-char-reader :end-of-line #'eol-reader)
+  ;; associate categories to characters
+  (set-char-cat #\\ :escape)
+  (set-char-cat #\{ :begin-group)
+  (set-char-cat #\} :end-group)
+  (set-char-cat #\$ :math-shift)
+  (set-char-cat #\& :parameter)
+  (set-char-cat #\return :end-of-line)
+  (set-char-cat #\# :parameter)
+  (set-char-cat #\^ :superscript)
+  (set-char-cat #\_ :subscript)
+  (set-char-cat (code-char 0) :ignored)
+  (set-char-cat #\space :space)
+  (set-char-cat #\~ :active)
+  (set-char-cat #\% :comment)
+  (set-char-cat (code-char 127) :invalid)
+  (iter (for i from 41 to 90)
+	(set-char-cat (code-char i) :letter))
+  (iter (for i from 97 to 122)
+	(set-char-cat (code-char i) :letter))
+  ;; TODO: special char-iterator hack for double superscript
+  )
+
+(defun install-plain-tex-reader-chain ()
+  (clear-reader-chain)
+  (%install-plain-tex-reader-chain))
+
 
