@@ -12,8 +12,14 @@
 (defun fart (format-str &rest args)
   (apply #'format `(t ,format-str ,@args)))
 
+(defparameter texenv::endlinechar 13)
+
 (defun plain-tex-prereader (string)
-  (join "" (string-right-trim '(#\space) string) #\return))
+  (join "" (string-right-trim '(#\space) string)
+	(if (not (and (<= 0 texenv::endlinechar)
+		      (<= texenv::endlinechar 255)))
+	    ""
+	    (code-char texenv::endlinechar))))
 (defun empty-prereader (string)
   string)
 
@@ -120,8 +126,9 @@
       (code-char (- (char-code char) 64))))
 
 (defun lower-hex-char-p (char)
-  (or (and (char<= #\a char) (char>= #\f char))
-      (and (char<= #\0 char) (char>= #\9 char))))
+  (and (characterp char)
+       (or (and (char<= #\a char) (char>= #\f char))
+	   (and (char<= #\0 char) (char>= #\9 char)))))
 
 (defun mangle-double-char (char1 char2)
   (code-char (parse-integer (format nil "~a~a" char1 char2)
@@ -425,7 +432,7 @@
 	(set-char-cat (code-char i) :letter))
   (iter (for i from 97 to 122)
 	(set-char-cat (code-char i) :letter))
-  ;; TODO: special char-iterator hack for double superscript
+  ;; TODO: restoration of TeXENV variables
   )
 
 (defun install-plain-tex-reader-chain ()
