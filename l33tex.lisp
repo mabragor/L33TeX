@@ -79,7 +79,7 @@
   ((cur-string :initform nil)
    (cur-pos :initform 0)
    (cur-length :initform 0)
-   (state :initform 0)))
+   (state :initform 2)))
 
 (defun mk-simple-chars (sub-iter)
   (make-instance 'simple-chars :sub-iterator sub-iter))
@@ -106,14 +106,100 @@
 		 (if (equal cur-length (incf cur-pos))
 		     (setf state 1))
 		 res))))))
+
+(defclass char-mangler (over-iter)
+  ())
+
+(defun soft-next-iter (iter)
+  (handler-case (next-iter iter)
+    (stop-iteration () :stop-iteration)))
+
+(defun mangle-single-char (char)
+  (if (< (char-code char) 64)
+      (code-char (+ 64 (char-code char)))
+      (code-char (- (char-code char) 64))))
+
+(defun lower-hex-char-p (char)
+  (or (and (char<= #\a char) (char>= #\f char))
+      (and (char<= #\0 char) (char>= #\9 char))))
+
+(defun mangle-double-char (char1 char2)
+  (code-char (parse-integer (format nil "~a~a" char1 char2)
+			    :radix 16)))
+
+(defun plain-tex-char-mangler (char iter)
+  (format t "char is ~a~%" char)
+  (if (eq :superscript (get-char-cat char))
+      (let ((next-char (next-iter iter)))
+	(format t "next char is ~a~%" char)
+	(if (equal char next-char)
+	    (let ((nn-char (soft-next-iter iter)))
+	      (format t "next next char is ~a~%" char)
+	      (if (eq :stop-iteration nn-char)
+		  (progn (push-iter next-char iter)
+			 char)
+		  (if (lower-hex-char-p nn-char)
+		      (let ((nnn-char (soft-next-iter iter)))
+			(if (eq :stop-iteration nnn-char)
+			    (mangle-single-char nn-char)
+			    (if (lower-hex-char-p nnn-char)
+				(mangle-double-char nn-char nnn-char)
+				(progn (push-iter nnn-char iter)
+				       (mangle-single-char nn-char)))))
+		      (if (< (char-code nn-char) 127)
+			  (mangle-single-char nn-char)
+			  (progn (push-iter nn-char iter)
+				 (push-iter next-char iter)
+				 char)))))
+	    (progn (push-iter next-char iter)
+		   char)))
+      char))
+
+(defun empty-mangler (char iter)
+  (declare (ignore iter))
+  char)
+
+(defparameter char-mangler nil)
+(defun install-plain-tex-mangler ()
+  (setf char-mangler #'plain-tex-char-mangler))
+(defun uninstall-mangler ()
+  (setf char-mangler #'empty-mangler))
+(defun install-custom-mangler (fun-pointer)
+  (setf char-mangler fun-pointer))
+				
+
+(defmethod next-iter ((iter char-mangler))
+  (with-slots (sub-iterator) iter
+    (let ((next-char (next-iter sub-iterator)))
+      (funcall char-mangler next-char sub-iterator))))
+
+
+(defun mk-char-mangler (sub-iter)
+  (make-instance 'char-mangler :sub-iterator sub-iter))
+
+(defun mk-reader-chain (stream)
+  (mk-pushable-iter (mk-teh-reader
+		     (mk-pushable-iter (mk-char-mangler
+					(mk-pushable-iter (mk-simple-chars
+							   (mk-prereader stream))))))))
       
+(defun tex-tokenize-file (fname)
+  ;; TODO: need to be able to save the current state of the reader chain
+  ;; Better yet, encapsulate the properties of a reader chain inside it
+  (install-plain-tex-reader-chain)
+  (with-open-file (stream fname)
+    (iter->list (mk-reader-chain stream))))
+
+(defun tex-tokenize-string (string)
+  (install-plain-tex-reader-chain)
+  (iter->list (mk-reader-chain (make-string-input-stream string))))
+
 (defun foo ()
-  (with-open-file (stream "~/drafts/kauffman-in-a-nutshell/noeuds-d-enfants.tex")
-    (iter->list (mk-pushable-iter (mk-simple-chars (mk-prereader stream))))))
-	
+  (tex-tokenize-file "~/drafts/kauffman-in-a-nutshell/noeuds-d-enfants.tex"))
 
 (defclass teh-reader (over-iter)
-  ((entry-point :initform (error "You should set the entry point, otherwise I won't work!"))))
+  ((entry-point :initform (error "You should set the entry point, otherwise I won't work!")
+		:initarg :entry-point)))
 
 (defparameter category-numbers
   '((:escape . 0)
@@ -136,6 +222,23 @@
 (defclass tex-token ()
   ((text :initarg :text :initform "")
    (cat :initarg :cat :initform 12)))
+
+(defmethod print-object ((obj tex-token) stream)
+  (if *print-readably*
+      (error 'print-not-readable)
+      (with-slots (text cat) obj
+	(princ "#<tex-token" stream)
+	(if (symbolp text)
+	    (progn (princ " " stream)
+		   (princ text stream)
+		   (princ " " stream))
+	    (progn (princ " " stream)
+		   (princ cat stream)
+		   (princ " " stream)
+		   (princ text stream)
+		   (princ " " stream)))
+	(princ ">" stream))))
+      
 
 (defun mk-tex-token (text &optional (cat :undefined))
   (make-instance 'tex-token :text text :cat cat))
@@ -262,7 +365,7 @@
 	(if (not char-reader)
 	    (let ((cat-reader (get-char-cat-reader new-char)))
 	      (if (not cat-reader)
-		  (error "Every character is supposed to have a category, so we shouldn't be here!")
+		  (error "Every character is supposed to have a category, so we shouldn't be here! Char is ~a" new-char)
 		  (funcall cat-reader new-char iter)))
 	    (funcall char-reader new-char iter))))))
 
@@ -270,12 +373,15 @@
 (defmethod next-iter ((iter teh-reader))
   (funcall (slot-value iter 'entry-point) iter))
 
+(defun mk-teh-reader (sub-iter)
+  (make-instance 'teh-reader :sub-iterator sub-iter :entry-point #'vanilla-reader))
 
 ;; OK, now I have to write installers for all these wonderful readers
 ;; But first, I need to write clearers.
 
 (defun clear-reader-chain ()
   (uninstall-prereader)
+  (uninstall-mangler)
   (clear-char-readtable)
   (clear-char-cats)
   (clear-cat-readtable))
@@ -285,6 +391,7 @@
 
 (defun %install-plain-tex-reader-chain ()
   (install-plain-tex-prereader)
+  (install-plain-tex-mangler)
   ;; install readers for char-categories
   (macrolet ((frob (&rest clauses)
 	       `(progn ,@(mapcar (lambda (clause)
@@ -293,7 +400,10 @@
 							#',(cat-reader-name (cadr clause)))
 				       `(set-cat-reader ,(keywordicate clause) #',(cat-reader-name clause))))
 				 clauses))))
-    (frob (other default) escape end-of-line ignored space comment invalid))
+    (frob (other default) (begin-group default) (end-group default) (math-shift default)
+	  (alignment-tab default) (superscript default) (subscript default) (letter default)
+	  (other default) (active default) (parameter default)
+	  escape end-of-line ignored space comment invalid))
   ;; install reader for :END-OF-LINE - special KLUDGE case
   (set-char-reader :end-of-line #'eol-reader)
   ;; associate categories to characters
@@ -311,7 +421,7 @@
   (set-char-cat #\~ :active)
   (set-char-cat #\% :comment)
   (set-char-cat (code-char 127) :invalid)
-  (iter (for i from 41 to 90)
+  (iter (for i from 65 to 90)
 	(set-char-cat (code-char i) :letter))
   (iter (for i from 97 to 122)
 	(set-char-cat (code-char i) :letter))
