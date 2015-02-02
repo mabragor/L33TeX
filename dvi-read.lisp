@@ -24,7 +24,7 @@
     (171 :fnt-num 0 63)
     (235 :fnt #'ub-reader 1 4)
     (239 :xxx #'special-reader 1 4)
-    (243 :fnt-def #'font-der-reader 1 4)
+    (243 :fnt-def #'font-def-reader 1 4)
     (247 :pre #'preamble-reader)
     (248 :post #'postamble-reader)
     (249 :post-post #'post-postamble-reader)))
@@ -46,7 +46,7 @@
 	(format t "*** pos is ~a, i is ~a~%" (file-position stream) i)
 	(summing (ash (read-byte stream) (* 8 i)))))
 
-(defun read-integer (stream)
+(defun read-unsigned-int (stream)
   (read-unsigned-nbyte 4 stream))
 
 
@@ -66,7 +66,7 @@
 	    (file-position stream (- (file-position stream) 1)))
       (file-position stream (- (file-position stream) 4))
       (format t "** file position is ~a~%" (file-position stream))
-      (file-position stream (read-integer stream))
+      (file-position stream (read-unsigned-int stream))
       (format t "** file position is ~a~%" (file-position stream))
       (read-byte stream))))
 
@@ -102,6 +102,38 @@
   (declare (ignore lst opcode))
   (list name (read-signed-int stream) (read-signed-int stream)))
 
+(defun bop-reader (stream opcode name lst)
+  (declare (ignore opcode lst))
+  (cons name 
+	(iter (for i from 0 to 10)
+	      (collect (read-unsigned-int stream)))))
+
+(defun read-byte-array (size stream)
+  (let ((buf (make-array (list size) :element-type '(unsigned-byte 8))))
+    (read-sequence buf stream)
+    buf))
+
+
+(defun special-reader (stream opcode name lst)
+  (declare (ignore opcode))
+  (let ((size (read-unsigned-nbyte (car lst) stream)))
+    (list name (read-byte-array size stream))))
+
+
+(defun font-def-reader (stream opcode name lst)
+  (declare (ignore opcode))
+  (let ((k (read-unsigned-nbyte (car lst) stream))
+	(checksum (read-unsigned-int stream))
+	(scale (read-unsigned-int stream))
+	(design-size (read-unsigned-int stream))
+	(dir-length (read-unsigned-nbyte 1 stream))
+	(fname-length (read-unsigned-nbyte 1 stream)))
+    (let ((dir (read-byte-array dir-length stream))
+	  (fname (read-byte-array fname-length stream)))
+      (list name :id k :checksum checksum :scale scale :design-size design-size
+	    :dir dir :file-name fname))))
+
+
 (defun read-until (stream end-opcode)
   (let ((cur-opcode nil)
 	(res nil))
@@ -116,3 +148,41 @@
 		(push (funcall reader stream cur-opcode name specs) res))))
     (nreverse res)))
 		    
+(defun preamble-reader (stream opcode name lst)
+  (declare (ignore opcode lst))
+  (let ((version (read-unsigned-nbyte 1 stream))
+	(num (read-unsigned-int stream))
+	(den (read-unsigned-int stream))
+	(mag (read-unsigned-int stream))
+	(comment-size (read-unsigned-nbyte 1 stream)))
+    (let ((comment (read-byte-array comment-size stream)))
+      (list name :version version :num num :den den :mag mag :comment comment))))
+
+(defun postamble-reader (stream opcode name lst)
+  (declare (ignore lst opcode))
+  (let ((p (read-unsigned-int stream))
+	(num (read-unsigned-int stream))
+	(den (read-unsigned-int stream))
+	(mag (read-unsigned-int stream))
+	(l (read-unsigned-int stream))
+	(u (read-unsigned-int stream))
+	(max-stack-size (read-unsigned-nbyte 2 stream))
+	(pages (read-unsigned-nbyte 2 stream)))
+    (list name :last-page-address p :num num :den den :mag mag
+	  :max-height-plus-depth l :max-width u
+	  :max-stack-size max-stack-size
+	  :num-pages pages)))
+	
+(defun post-postamble-reader (stream opcode name lst)
+  (declare (ignore lst opcode))
+  (let ((postamble-pointer (read-unsigned-int stream))
+	(version (read-unsigned-nbyte 1 stream)))
+    (let ((num-magic 0))
+      (iter (while t)
+	    (let ((byte (read-byte stream nil :eof)))
+	      (cond ((eq byte :eof) (terminate))
+		    ((equal magic-tail byte) (incf num-magic))
+		    (t (error "Wrong opcode found in post-postamble: ~a" byte)))))
+      (list name :postamble-pointer postamble-pointer :version version :num-magic num-magic))))
+			
+	
