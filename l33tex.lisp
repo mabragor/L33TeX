@@ -2,16 +2,6 @@
 
 (in-package #:l33tex)
 
-(defun joinl (joinee lst)
-  (format nil (concatenate 'string "~{~a~^" joinee "~}") lst))
-(defun join (joinee &rest lst)
-  (joinl joinee lst))
-
-(defun frnl (format-str &rest args)
-  (apply #'format `(nil ,format-str ,@args)))
-(defun fart (format-str &rest args)
-  (apply #'format `(t ,format-str ,@args)))
-
 (defparameter texenv::endlinechar 13)
 
 (defun plain-tex-prereader (string)
@@ -296,10 +286,10 @@
 ;; (defun superscript-cat-reader (char iter)
 ;;   (with-slots (sub-iterator) iter
 
-
-(defun keywordicate (x)
-  (intern (string x)
-	  (find-package "KEYWORD")))
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun keywordicate (x)
+    (intern (string x)
+	    (find-package "KEYWORD"))))
 
 (defun read-letter-sequence (char iter)
   (let ((res (list char))
@@ -393,8 +383,9 @@
   (clear-char-cats)
   (clear-cat-readtable))
 
-(defun cat-reader-name (x)
-  (intern (join "" (string x) "-CAT-READER")))
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun cat-reader-name (x)
+    (intern (join "" (string x) "-CAT-READER"))))
 
 (defun %install-plain-tex-reader-chain ()
   (install-plain-tex-prereader)
